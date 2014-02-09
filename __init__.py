@@ -1,86 +1,30 @@
+import bpy
+import os
+import threading
+import time
+
+from bpy.app.handlers import persistent
+from .packages import requests
+
+
 bl_info = {
-    "name": "Sketchfab export",
+    "name": "Sketchfab Exporter",
     "author": "Bart Crouch",
-    "version": (1, 1, 0),
+    "version": (1, 2, 0),
     "blender": (2, 6, 3),
     "location": "View3D > Properties panel",
     "description": "Upload your model to Sketchfab",
     "warning": "",
     "wiki_url": "",
     "tracker_url": "",
-    "category": "Import-Export"}
+    "category": "Import-Export"
+}
 
 
-import base64
-import bpy
-import json
-import os
-import threading
-import time
-import urllib.request
-from bpy.app.handlers import persistent
+DEBUG_MODE = False     # if True, no contact is made with the webserver
 
-
-test = False     # if True, no contact is made with the webserver
-
-
-# save an openGL render as thumbnail
-def create_thumbnail():
-    # saving old settings
-    old_path = bpy.context.scene.render.filepath
-    old_fileformat = bpy.context.scene.render.image_settings.file_format
-    old_extension = bpy.context.scene.render.use_file_extension
-    old_x = bpy.context.scene.render.resolution_x
-    old_y = bpy.context.scene.render.resolution_y
-    old_percentage = bpy.context.scene.render.resolution_percentage
-    old_aspect_x = bpy.context.scene.render.pixel_aspect_x
-    old_aspect_y = bpy.context.scene.render.pixel_aspect_y
-    old_perspective = bpy.context.region_data.view_perspective
-    old_distance = bpy.context.region_data.view_distance
-    old_location = bpy.context.region_data.view_location[:]
-    old_rotation = bpy.context.region_data.view_rotation[:]
-    
-    # setting up render settings
-    filepath = bpy.data.filepath
-    filename_pos = len(bpy.path.basename(bpy.data.filepath))
-    filepath = filepath[:-filename_pos]
-    filename = time.strftime("Sketchfab_%Y_%m_%d_%H_%M_%S",
-        time.localtime(time.time()))
-    filepath += filename
-    bpy.context.scene.render.filepath = filepath
-    bpy.context.scene.render.image_settings.file_format = 'PNG'
-    bpy.context.scene.render.use_file_extension = True
-    bpy.context.scene.render.resolution_x = 448
-    bpy.context.scene.render.resolution_y = 280
-    bpy.context.scene.render.resolution_percentage = 100
-    bpy.context.scene.render.pixel_aspect_x = 1.0
-    bpy.context.scene.render.pixel_aspect_y = 1.0
-    if bpy.context.scene.camera:
-        bpy.context.region_data.view_perspective = 'CAMERA'
-    
-    # render
-    bpy.ops.render.opengl(write_still=True, view_context=True)
-    
-    # restore old settings
-    bpy.context.scene.render.filepath = old_path
-    bpy.context.scene.render.image_settings.file_format = old_fileformat
-    bpy.context.scene.render.use_file_extension = old_extension
-    bpy.context.scene.render.resolution_x = old_x
-    bpy.context.scene.render.resolution_y = old_y
-    bpy.context.scene.render.resolution_percentage = old_percentage
-    bpy.context.scene.render.pixel_aspect_x = old_aspect_x
-    bpy.context.scene.render.pixel_aspect_y = old_aspect_y
-    bpy.context.region_data.view_perspective = old_perspective
-    bpy.context.region_data.view_distance = old_distance
-    bpy.context.region_data.view_location = old_location
-    bpy.context.region_data.view_rotation = old_rotation
-
-    # return values
-    filepath += ".png"
-    size = os.path.getsize(filepath)
-
-    return(filepath, size)
-
+SKETCHFAB_API_URL = 'https://api.sketchfab.com/v1/models'
+SKETCHFAB_MODEL_URL = 'https://sketchfab.com/show/'
 
 # change a bytes int into a properly formatted string
 def format_size(size):
@@ -94,8 +38,8 @@ def format_size(size):
     else:
         size = "%.1f"%size
     size += " " + size_suffix
-    
-    return(size)
+
+    return size
 
 
 # attempt to load token from presets
@@ -113,12 +57,12 @@ def load_token(dummy=False):
         token = ""
     file.close()
     bpy.context.window_manager.sketchfab.token = token
-    
+
 
 # change visibility statuses and pack images
 def prepare_assets():
     props = bpy.context.window_manager.sketchfab
-    
+
     hidden = []
     images = []
     if props.models == 'selection' or props.lamps != 'all':
@@ -141,14 +85,14 @@ def prepare_assets():
                 if not ob.hide:
                     ob.hide = True
                     hidden.append(ob)
-    
+
     packed = []
     for img in images:
         if not img.packed_file:
             img.pack()
             packed.append(img)
-    
-    return(hidden, packed)
+
+    return (hidden, packed)
 
 
 # restore original situation
@@ -167,19 +111,17 @@ def save_blend_copy():
     filename = time.strftime("Sketchfab_%Y_%m_%d_%H_%M_%S.blend",
         time.localtime(time.time()))
     filepath += filename
-    
+
     bpy.ops.wm.save_as_mainfile(filepath=filepath, compress=True,
         copy=True)
     size = os.path.getsize(filepath)
-    
+
     return(filepath, filename, size)
 
 
 # remove file copy
-def terminate(filepath, thumbnail, thumbnail_path):
+def terminate(filepath):
     os.remove(filepath)
-    if thumbnail:
-        os.remove(thumbnail_path)
 
 
 # save token to file
@@ -194,60 +136,51 @@ def update_token(self, context):
     file.close()
 
 
-# upload the blend-file to sketchfab
-def upload(filepath, filename, thumbnail_path):
+
+def show_upload_result(msg, msg_type, result=None):
     props = bpy.context.window_manager.sketchfab
-    url="https://api.sketchfab.com/model"
+    props.message = msg
+    props.message_type = msg_type
+    if result:
+        props.result = result
+
+
+# upload the blend-file to sketchfab
+def upload(filepath, filename):
+    props = bpy.context.window_manager.sketchfab
+
     title = props.title
     if not title:
         title = bpy.path.basename(bpy.data.filepath).split('.')[0]
-    
-    model_contents = base64.encodestring(open(filepath, 'rb').read()).decode()
+
     data = {
         "title": title,
         "description": props.description,
-        "contents": model_contents,
         "filename": filename,
         "tags": props.tags,
-        "token": props.token
+        "private": props.private,
+        "token": props.token,
+        "source": "blender-exporter"
     }
-    
-    if props.thumbnail:
-        model_thumb = base64.encodestring(open(thumbnail_path, 'rb').\
-            read()).decode()
-        data["thumbnail"] = model_thumb
-    
-    data_dump = json.dumps(data).encode()
-    
-    if test:
-        props.message_type = 'INFO'
-        props.message = "Test successful"
-        return
-    
+
+    if props.private and props.password != "":
+        data['password'] = props.password
+
+    files = {
+        'fileModel': open(filepath, 'rb')
+    }
+
     try:
-        f = urllib.request.urlopen(url, data_dump)
-    except urllib.error.HTTPError as error:
-        errorcode = str(error.code)
-        f = False
-    if f:
-        response = json.loads(f.read().decode())
-        f.close()
-    else:
-        if errorcode == '403':
-            response = {'error':"wrong token"}
-        elif errorcode == '404':
-            response = {'error':"url not found"}
-        else:
-            response = {'error':errorcode}
-    
-    if 'success' in response:
-        props.message = "Upload available at: http://sketchfab.com/show/%s" \
-            % response['id']
-        props.message_type = 'INFO'
-        props.result = "http://sketchfab.com/show/%s" % response['id']
-    else:
-        props.message = "Upload failed. Error: %s" % response['error']
-        props.message_type = 'ERROR'
+        r = requests.post(SKETCHFAB_API_URL, data=data, files=files, verify=False)
+    except requests.exceptions.RequestException as e:
+        return show_upload_result('Upload failed. Error: %s' % str(e), 'ERROR')
+
+    result = r.json()
+    if r.status_code != requests.codes.ok:
+        return show_upload_result('Upload failed. Error: %s' % result['error'], 'ERROR')
+
+    model_url = SKETCHFAB_MODEL_URL + result['result']['id']
+    return show_upload_result('Upload complete. %s' % model_url, 'INFO', model_url)
 
 
 # operator to export model to sketchfab
@@ -255,16 +188,15 @@ class ExportSketchfab(bpy.types.Operator):
     '''Upload your model to Sketchfab'''
     bl_idname = "export.sketchfab"
     bl_label = "Upload"
-    
+
     _timer = None
     _thread = None
-    
+
     def modal(self, context, event):
         if event.type == 'TIMER':
             if not self._thread.is_alive():
                 props = context.window_manager.sketchfab
-                terminate(props.filepath, props.thumbnail,
-                    props.thumbnail_path)
+                terminate(props.filepath)
                 if context.area:
                     context.area.tag_redraw()
                 if not props.message_type:
@@ -275,40 +207,37 @@ class ExportSketchfab(bpy.types.Operator):
                 context.window_manager.event_timer_remove(self._timer)
                 self._thread.join()
                 props.uploading = False
-                return{'FINISHED'}
+                return {'FINISHED'}
 
         return {'PASS_THROUGH'}
 
     def execute(self, context):
-        props = context.window_manager.sketchfab        
+        props = context.window_manager.sketchfab
         if not props.token:
             self.report({'ERROR'}, "Token is missing")
-            return{'CANCELLED'}
+            return {'CANCELLED'}
         props.uploading = True
-        
+
         hidden, packed = prepare_assets()
         props.filepath, filename, size_blend = save_blend_copy()
-        if props.thumbnail:
-            props.thumbnail_path, size_thumb = create_thumbnail()
-        else:
-            props.thumbnail_path = ""
-            size_thumb = 0
-        props.size = format_size(size_blend + size_thumb)
+        props.size = format_size(size_blend)
         restore(hidden, packed)
-        self._thread = threading.Thread(target=upload,
-            args=(props.filepath, filename, props.thumbnail_path))
+        self._thread = threading.Thread(
+            target=upload,
+            args=(props.filepath, filename)
+        )
         self._thread.start()
-        
+
         context.window_manager.modal_handler_add(self)
         self._timer = context.window_manager.event_timer_add(1.0,
             context.window)
 
         return {'RUNNING_MODAL'}
-    
+
     def cancel(self, context):
         context.window_manager.event_timer_remove(self._timer)
         self._thread.join()
-        
+
         return {'CANCELLED'}
 
 
@@ -317,10 +246,10 @@ class ExportSketchfabBusy(bpy.types.Operator):
     '''Upload your model to Sketchfab'''
     bl_idname = "export.sketchfab_busy"
     bl_label = "Uploading"
-    
+
     def execute(self, context):
         self.report({'WARNING'}, "Please wait till current upload is finished")
-        
+
         return {'FINISHED'}
 
 
@@ -347,22 +276,23 @@ class VIEW3D_PT_sketchfab(bpy.types.Panel):
             if not props.token:
                 load_token()
         layout = self.layout
-        
+
         col = layout.box().column(align=True)
         col.prop(props, "models")
         col.prop(props, "lamps")
-        #col.prop(props, "split")
-        col.prop(props, "thumbnail")
 
         col = layout.box().column(align=True)
         col.prop(props, "title")
         col.prop(props, "description")
         col.prop(props, "tags")
-        
+        col.prop(props, "private")
+        if props.private:
+            col.prop(props, "password")
+
         layout.prop(props, "token")
         if props.uploading:
             layout.operator("export.sketchfab_busy",
-                text="Uploading "+props.size)
+                text="Uploading " + props.size)
         else:
             layout.operator("export.sketchfab")
 
@@ -398,17 +328,14 @@ class SketchfabProps(bpy.types.PropertyGroup):
     size = bpy.props.StringProperty(name="Size",
         description = "Current filesize being uploaded",
         default = "")
-    split = bpy.props.BoolProperty(name="Split models",
-        description = "Export each mesh as a seperate model",
+    private = bpy.props.BoolProperty(name="Private",
+        description = "Upload as private (requires a pro account)",
         default = False)
+    password = bpy.props.StringProperty(name="Password",
+        description = "Password-protect your model (requires a pro account)",
+        default = "")
     tags = bpy.props.StringProperty(name="Tags",
         description = "List of tags, separated by spaces (optional)",
-        default = "")
-    thumbnail = bpy.props.BoolProperty(name="Thumbnail",
-        description = "Automatically generated, using the default camera",
-        default = True)
-    thumbnail_path = bpy.props.StringProperty(name="Thumbnail filepath",
-        description = "internal use",
         default = "")
     title = bpy.props.StringProperty(name="Title",
         description = "Title of the model (determined automatically if \
@@ -429,16 +356,16 @@ website",
 
 # registration
 classes = [ExportSketchfab,
-    ExportSketchfabBusy,
-    SketchfabProps,
-    VIEW3D_MT_popup_result,
-    VIEW3D_PT_sketchfab]
+           ExportSketchfabBusy,
+           SketchfabProps,
+           VIEW3D_MT_popup_result,
+           VIEW3D_PT_sketchfab]
 
 
 def register():
     for c in classes:
         bpy.utils.register_class(c)
-    bpy.types.WindowManager.sketchfab = bpy.props.PointerProperty(\
+    bpy.types.WindowManager.sketchfab = bpy.props.PointerProperty(
         type = SketchfabProps)
     load_token()
     bpy.app.handlers.load_post.append(load_token)
@@ -451,7 +378,6 @@ def unregister():
         del bpy.types.WindowManager.sketchfab
     except:
         pass
-
 
 if __name__ == "__main__":
     register()
