@@ -1,12 +1,3 @@
-import bpy
-import os
-import threading
-import time
-
-from bpy.app.handlers import persistent
-from .packages import requests
-
-
 bl_info = {
     "name": "Sketchfab Exporter",
     "author": "Bart Crouch",
@@ -20,10 +11,26 @@ bl_info = {
     "category": "Import-Export"
 }
 
+if "bpy" in locals():
+    import imp
+    imp.reload(requests)
+else:
+    from .packages import requests
+
+import bpy
+import os
+import threading
+import time
+import re
+
+from bpy.app.handlers import persistent
+
 
 DEBUG_MODE = False     # if True, no contact is made with the webserver
 
-SKETCHFAB_API_URL = 'https://api.sketchfab.com/v1/models'
+SKETCHFAB_API_URL = 'https://api.sketchfab.com'
+SKETCHFAB_API_MODELS_URL = SKETCHFAB_API_URL + '/v1/models'
+SKETCHFAB_API_TOKEN_URL = SKETCHFAB_API_URL + '/v1/users/claim-token'
 SKETCHFAB_MODEL_URL = 'https://sketchfab.com/show/'
 
 # change a bytes int into a properly formatted string
@@ -171,7 +178,7 @@ def upload(filepath, filename):
     }
 
     try:
-        r = requests.post(SKETCHFAB_API_URL, data=data, files=files, verify=False)
+        r = requests.post(SKETCHFAB_API_MODELS_URL, data=data, files=files, verify=False)
     except requests.exceptions.RequestException as e:
         return show_upload_result('Upload failed. Error: %s' % str(e), 'ERROR')
 
@@ -277,10 +284,12 @@ class VIEW3D_PT_sketchfab(bpy.types.Panel):
                 load_token()
         layout = self.layout
 
+        layout.label('Export:')
         col = layout.box().column(align=True)
         col.prop(props, "models")
         col.prop(props, "lamps")
 
+        layout.label('Model info:')
         col = layout.box().column(align=True)
         col.prop(props, "title")
         col.prop(props, "description")
@@ -289,7 +298,12 @@ class VIEW3D_PT_sketchfab(bpy.types.Panel):
         if props.private:
             col.prop(props, "password")
 
-        layout.prop(props, "token")
+        layout.label('Sketchfab account:')
+        col = layout.box().column(align=True)
+        col.prop(props, "token")
+        row = col.row()
+        row.alignment = 'RIGHT'
+        row.operator('object.dialog_operator', text="Claim your token")
         if props.uploading:
             layout.operator("export.sketchfab_busy",
                 text="Uploading " + props.size)
@@ -349,15 +363,47 @@ website",
     token_reload = bpy.props.BoolProperty(name="Reload of token necessary?",
         description = "internal use",
         default = True)
+    token_reload = bpy.props.BoolProperty(name="Reload of token necessary?",
+        description = "internal use",
+        default = True)
     uploading = bpy.props.BoolProperty(name="Busy uploading",
         description = "internal use",
         default = False)
 
 
+class DialogOperator(bpy.types.Operator):
+    bl_idname = "object.dialog_operator"
+    bl_label = "Enter your email to get you a sketchfab token"
+
+    email = bpy.props.StringProperty(name="Email",
+                                     default="you@example.com")
+
+    def execute(self, context):
+        EMAIL_RE = re.compile(r'[^@]+@[^@]+\.[^@]+')
+        if not EMAIL_RE.match(self.email):
+            self.report({'ERROR'}, 'Wrong email format')
+        try:
+            r = requests.get(SKETCHFAB_API_TOKEN_URL + '?source=blender-exporter&email=' + self.email, verify=False)
+        except requests.exceptions.RequestException as e:
+            self.report({'ERROR'}, str(e))
+            return {'FINISHED'}
+
+        if r.status_code != requests.codes.ok:
+            self.report({'ERROR'}, 'An error occured. Check the format of your email')
+        else:
+            self.report({'INFO'}, "Your email was sent at your email address")
+
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        wm = context.window_manager
+        return wm.invoke_props_dialog(self, width=550)
+
 # registration
 classes = [ExportSketchfab,
            ExportSketchfabBusy,
            SketchfabProps,
+           DialogOperator,
            VIEW3D_MT_popup_result,
            VIEW3D_PT_sketchfab]
 
