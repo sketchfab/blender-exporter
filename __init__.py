@@ -373,7 +373,7 @@ website",
 
 class DialogOperator(bpy.types.Operator):
     bl_idname = "object.dialog_operator"
-    bl_label = "Enter your email to get you a sketchfab token"
+    bl_label = "Enter your email to get a sketchfab token"
 
     email = bpy.props.StringProperty(name="Email",
                                      default="you@example.com")
