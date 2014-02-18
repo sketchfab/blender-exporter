@@ -24,6 +24,7 @@ import time
 import re
 
 from bpy.app.handlers import persistent
+from bpy.props import StringProperty, EnumProperty, BoolProperty, PointerProperty
 
 
 DEBUG_MODE = False     # if True, no contact is made with the webserver
@@ -61,7 +62,7 @@ def load_token(dummy=False):
 
     token = ''
     try:
-        with open(filepath, 'r') as f:
+        with open(filepath, 'r', encoding='utf-8') as f:
             token = f.readline()
     except:
         import traceback
@@ -76,7 +77,7 @@ def prepare_assets(operator):
 
     hidden = set()
     images = set()
-    if props.models == 'selection' or props.lamps != 'all':
+    if props.models == 'SELECTION' or props.lamps != 'ALL':
         for ob in bpy.data.objects:
             if ob.type == 'MESH':
                 for mat_slot in ob.material_slots:
@@ -87,12 +88,12 @@ def prepare_assets(operator):
                             continue
                         if tex_slot.texture.type == 'IMAGE':
                             images.add(tex_slot.texture.image)
-            if (props.models == 'selection' and ob.type == 'MESH') or \
-            (props.lamps == 'selection' and ob.type == 'LAMP'):
+            if (props.models == 'SELECTION' and ob.type == 'MESH') or \
+            (props.lamps == 'SELECTION' and ob.type == 'LAMP'):
                 if not ob.select and not ob.hide:
                     ob.hide = True
                     hidden.add(ob)
-            elif props.lamps == 'none' and ob.type == 'LAMP':
+            elif props.lamps == 'NONE' and ob.type == 'LAMP':
                 if not ob.hide:
                     ob.hide = True
                     hidden.add(ob)
@@ -120,18 +121,16 @@ def restore(hidden, packed):
 
 # save a copy of the current blendfile
 def save_blend_copy():
-    filepath = bpy.data.filepath
-    filename_pos = len(bpy.path.basename(bpy.data.filepath))
-    filepath = filepath[:-filename_pos]
+    filepath = os.path.dirname(bpy.data.filepath)
     filename = time.strftime("Sketchfab_%Y_%m_%d_%H_%M_%S.blend",
         time.localtime(time.time()))
-    filepath += filename
+    filepath = os.path.join(filepath, filename)
 
     bpy.ops.wm.save_as_mainfile(filepath=filepath, compress=True,
         copy=True)
     size = os.path.getsize(filepath)
 
-    return(filepath, filename, size)
+    return (filepath, filename, size)
 
 
 # remove file copy
@@ -146,7 +145,7 @@ def update_token(self, context):
     if not os.path.exists(path):
         os.makedirs(path)
     filepath = os.path.join(path, SKETCHFAB_PRESET_FILE)
-    with open(filepath, 'w+') as f:
+    with open(filepath, 'w', encoding='utf-8') as f:
         f.write(token)
 
 
@@ -164,7 +163,7 @@ def upload(filepath, filename):
 
     title = props.title
     if not title:
-        title = bpy.path.basename(bpy.data.filepath).split('.')[0]
+        title = os.path.splitext(os.path.basename(bpy.data.filepath))[0]
 
     data = {
         "title": title,
@@ -196,6 +195,12 @@ def upload(filepath, filename):
     return show_upload_result('Upload complete. %s' % model_url, 'INFO', model_url)
 
 
+
+def draw_success_popup(self, context):
+    result = context.window_manager.sketchfab.result
+    self.layout.operator("wm.url_open", text="View online").url = result
+
+
 # operator to export model to sketchfab
 class ExportSketchfab(bpy.types.Operator):
     '''Upload your model to Sketchfab'''
@@ -216,7 +221,7 @@ class ExportSketchfab(bpy.types.Operator):
                     props.message_type = 'ERROR'
                 self.report({props.message_type}, props.message)
                 if props.message_type == 'INFO':
-                    bpy.ops.wm.call_menu(name="VIEW3D_MT_popup_result")
+                    context.window_manager.popup_menu(draw_success_popup, title="Upload successful")
                 context.window_manager.event_timer_remove(self._timer)
                 self._thread.join()
                 props.uploading = False
@@ -266,16 +271,6 @@ class ExportSketchfabBusy(bpy.types.Operator):
         return {'FINISHED'}
 
 
-# menu class to display the url after uploading
-class VIEW3D_MT_popup_result(bpy.types.Menu):
-    bl_label = "Upload successful"
-
-    def draw(self, context):
-        layout = self.layout
-        result = context.window_manager.sketchfab.result
-        layout.operator("wm.url_open", text="View online").url = result
-
-
 # user interface
 class VIEW3D_PT_sketchfab(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
@@ -319,60 +314,60 @@ class VIEW3D_PT_sketchfab(bpy.types.Panel):
 
 # property group containing all properties for the user interface
 class SketchfabProps(bpy.types.PropertyGroup):
-    description = bpy.props.StringProperty(name="Description",
+    description = StringProperty(name="Description",
         description = "Description of the model (optional)",
         default = "")
-    filepath = bpy.props.StringProperty(name="Filepath",
+    filepath = StringProperty(name="Filepath",
         description = "internal use",
         default = "")
-    lamps = bpy.props.EnumProperty(name="Lamps",
-        items = (('all', "All", "Export all lamps in the file"),
-            ('none', "None", "Don't export any lamps"),
-            ('selection', "Selection", "Only export selected lamps")),
+    lamps = EnumProperty(name="Lamps",
+        items = (('ALL', "All", "Export all lamps in the file"),
+                ('NONE', "None", "Don't export any lamps"),
+                ('SELECTION', "Selection", "Only export selected lamps")),
         description = "Determines which lamps are exported",
-        default = 'all')
-    message = bpy.props.StringProperty(name="Message",
+        default = 'ALL')
+    message = StringProperty(name="Message",
         description = "internal use",
         default = "")
-    message_type = bpy.props.StringProperty(name="Message type",
+    message_type = StringProperty(name="Message type",
         description = "internal use",
         default = "")
-    models = bpy.props.EnumProperty(name="Models",
-        items = (('all', "All", "Export all meshes in the file"),
-            ('selection', "Selection", "Only export selected meshes")),
+    models = EnumProperty(name="Models",
+        items = (('ALL', "All", "Export all meshes in the file"),
+                 ('SELECTION', "Selection", "Only export selected meshes")),
         description = "Determines which meshes are exported",
-        default = 'selection')
-    result = bpy.props.StringProperty(name="Result",
+        default = 'SELECTION')
+    result = StringProperty(name="Result",
         description = "internal use, stores the url of the uploaded model",
         default = "")
-    size = bpy.props.StringProperty(name="Size",
+    size = StringProperty(name="Size",
         description = "Current filesize being uploaded",
         default = "")
-    private = bpy.props.BoolProperty(name="Private",
+    private = BoolProperty(name="Private",
         description = "Upload as private (requires a pro account)",
         default = False)
-    password = bpy.props.StringProperty(name="Password",
+    password = StringProperty(name="Password",
         description = "Password-protect your model (requires a pro account)",
         default = "")
-    tags = bpy.props.StringProperty(name="Tags",
+    tags = StringProperty(name="Tags",
         description = "List of tags, separated by spaces (optional)",
         default = "")
-    title = bpy.props.StringProperty(name="Title",
+    title = StringProperty(name="Title",
         description = "Title of the model (determined automatically if \
 left empty)",
         default = "")
-    token = bpy.props.StringProperty(name="Api Key",
+    token = StringProperty(name="Api Key",
         description = "You can find this on your dashboard at the Sketchfab \
 website",
         default = "",
         update = update_token)
-    token_reload = bpy.props.BoolProperty(name="Reload of token necessary?",
+    token_reload = BoolProperty(name="Reload of token necessary?",
         description = "internal use",
         default = True)
-    token_reload = bpy.props.BoolProperty(name="Reload of token necessary?",
+    token_reload = BoolProperty(name="Reload of token necessary?",
         description = "internal use",
         default = True)
-    uploading = bpy.props.BoolProperty(name="Busy uploading",
+    uploading = BoolProperty(name="Busy uploading",
         description = "internal use",
         default = False)
 
@@ -381,7 +376,7 @@ class DialogOperator(bpy.types.Operator):
     bl_idname = "object.dialog_operator"
     bl_label = "Enter your email to get a sketchfab token"
 
-    email = bpy.props.StringProperty(name="Email",
+    email = StringProperty(name="Email",
                                      default="you@example.com")
 
     def execute(self, context):
@@ -410,14 +405,13 @@ classes = [ExportSketchfab,
            ExportSketchfabBusy,
            SketchfabProps,
            DialogOperator,
-           VIEW3D_MT_popup_result,
            VIEW3D_PT_sketchfab]
 
 
 def register():
     for c in classes:
         bpy.utils.register_class(c)
-    bpy.types.WindowManager.sketchfab = bpy.props.PointerProperty(
+    bpy.types.WindowManager.sketchfab = PointerProperty(
         type = SketchfabProps)
     load_token()
     bpy.app.handlers.load_post.append(load_token)
