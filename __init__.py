@@ -55,15 +55,18 @@ def format_size(size):
 def load_token(dummy=False):
     filepath = os.path.join(bpy.utils.user_resource('SCRIPTS'), "presets",
         SKETCHFAB_PRESET_FILE)
-    try:
-        file = open(filepath, 'r')
-    except:
+
+    if not os.path.exists(filepath):
         return
+
+    token = ''
     try:
-        token = file.readline()
+        with open(filepath, 'r') as f:
+            token = f.readline()
     except:
-        token = ""
-    file.close()
+        import traceback
+        traceback.print_exc()
+
     bpy.context.window_manager.sketchfab.token = token
 
 
@@ -139,10 +142,8 @@ def update_token(self, context):
     if not os.path.exists(path):
         os.makedirs(path)
     filepath = os.path.join(path, SKETCHFAB_PRESET_FILE)
-    file = open(filepath, 'w+')
-    file.write(token)
-    file.close()
-
+    with open(filepath, 'w+') as f:
+        f.write(token)
 
 
 def show_upload_result(msg, msg_type, result=None):
