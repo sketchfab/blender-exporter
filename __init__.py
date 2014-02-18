@@ -71,7 +71,7 @@ def load_token(dummy=False):
 
 
 # change visibility statuses and pack images
-def prepare_assets():
+def prepare_assets(operator):
     props = bpy.context.window_manager.sketchfab
 
     hidden = set()
@@ -100,8 +100,12 @@ def prepare_assets():
     packed = set()
     for img in images:
         if not img.packed_file:
-            img.pack()
-            packed.add(img)
+            try:
+                img.pack()
+                packed.add(img)
+            except:
+                operator.report({'WARNING'}, 'Error occured while packing an image')
+                return {'FINISHED'}
 
     return (hidden, packed)
 
@@ -227,7 +231,7 @@ class ExportSketchfab(bpy.types.Operator):
             return {'CANCELLED'}
         props.uploading = True
 
-        hidden, packed = prepare_assets()
+        hidden, packed = prepare_assets(self)
         props.filepath, filename, size_blend = save_blend_copy()
         props.size = format_size(size_blend)
         restore(hidden, packed)
