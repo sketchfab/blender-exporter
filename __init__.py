@@ -32,6 +32,7 @@ SKETCHFAB_API_URL = 'https://api.sketchfab.com'
 SKETCHFAB_API_MODELS_URL = SKETCHFAB_API_URL + '/v1/models'
 SKETCHFAB_API_TOKEN_URL = SKETCHFAB_API_URL + '/v1/users/claim-token'
 SKETCHFAB_MODEL_URL = 'https://sketchfab.com/show/'
+SKETCHFAB_PRESET_FILE = 'sketchfab.txt'
 
 # change a bytes int into a properly formatted string
 def format_size(size):
@@ -53,7 +54,7 @@ def format_size(size):
 @persistent
 def load_token(dummy=False):
     filepath = os.path.join(bpy.utils.user_resource('SCRIPTS'), "presets",
-        "sketchfab.txt")
+        SKETCHFAB_PRESET_FILE)
     try:
         file = open(filepath, 'r')
     except:
@@ -137,7 +138,7 @@ def update_token(self, context):
     path = os.path.join(bpy.utils.user_resource('SCRIPTS'), "presets")
     if not os.path.exists(path):
         os.makedirs(path)
-    filepath = os.path.join(path, "sketchfab.txt")
+    filepath = os.path.join(path, SKETCHFAB_PRESET_FILE)
     file = open(filepath, 'w+')
     file.write(token)
     file.close()
