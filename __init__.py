@@ -74,8 +74,8 @@ def load_token(dummy=False):
 def prepare_assets():
     props = bpy.context.window_manager.sketchfab
 
-    hidden = []
-    images = []
+    hidden = set()
+    images = set()
     if props.models == 'selection' or props.lamps != 'all':
         for ob in bpy.data.objects:
             if ob.type == 'MESH':
@@ -86,22 +86,22 @@ def prepare_assets():
                         if not tex_slot:
                             continue
                         if tex_slot.texture.type == 'IMAGE':
-                            images.append(tex_slot.texture.image)
+                            images.add(tex_slot.texture.image)
             if (props.models == 'selection' and ob.type == 'MESH') or \
             (props.lamps == 'selection' and ob.type == 'LAMP'):
                 if not ob.select and not ob.hide:
                     ob.hide = True
-                    hidden.append(ob)
+                    hidden.add(ob)
             elif props.lamps == 'none' and ob.type == 'LAMP':
                 if not ob.hide:
                     ob.hide = True
-                    hidden.append(ob)
+                    hidden.add(ob)
 
-    packed = []
+    packed = set()
     for img in images:
         if not img.packed_file:
             img.pack()
-            packed.append(img)
+            packed.add(img)
 
     return (hidden, packed)
 
