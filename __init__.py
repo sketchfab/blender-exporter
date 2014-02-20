@@ -38,20 +38,29 @@ else:
 import bpy
 import os
 import threading
-import time
 import re
+import json
+import subprocess
 
 from bpy.app.handlers import persistent
 from bpy.props import StringProperty, EnumProperty, BoolProperty, PointerProperty
-
-
-DEBUG_MODE = False     # if True, no contact is made with the webserver
 
 SKETCHFAB_API_URL = 'https://api.sketchfab.com'
 SKETCHFAB_API_MODELS_URL = SKETCHFAB_API_URL + '/v1/models'
 SKETCHFAB_API_TOKEN_URL = SKETCHFAB_API_URL + '/v1/users/claim-token'
 SKETCHFAB_MODEL_URL = 'https://sketchfab.com/show/'
 SKETCHFAB_PRESET_FILE = 'sketchfab.txt'
+SKETCHFAB_EXPORT_DATA_FILENAME = 'sketchfab-export-data.json'
+SKETCHFAB_EXPORT_FILENAME = 'sketchfab-export.blend'
+
+SKETCHFAB_EXPORT_DATA_FILE = os.path.join(
+    bpy.utils.user_resource('SCRIPTS'),
+    "presets",
+    SKETCHFAB_EXPORT_DATA_FILENAME
+)
+
+DEBUG_MODE = False     # if True, no contact is made with the webserver
+
 
 # change a bytes int into a properly formatted string
 def format_size(size):
@@ -88,72 +97,6 @@ def load_token(dummy=False):
 
     bpy.context.window_manager.sketchfab.token = token
 
-
-# change visibility statuses and pack images
-def prepare_assets(operator):
-    props = bpy.context.window_manager.sketchfab
-
-    hidden = set()
-    images = set()
-    if props.models == 'SELECTION' or props.lamps != 'ALL':
-        for ob in bpy.data.objects:
-            if ob.type == 'MESH':
-                for mat_slot in ob.material_slots:
-                    if not mat_slot.material:
-                        continue
-                    for tex_slot in mat_slot.material.texture_slots:
-                        if not tex_slot:
-                            continue
-                        if tex_slot.texture.type == 'IMAGE':
-                            images.add(tex_slot.texture.image)
-            if (props.models == 'SELECTION' and ob.type == 'MESH') or \
-            (props.lamps == 'SELECTION' and ob.type == 'LAMP'):
-                if not ob.select and not ob.hide:
-                    ob.hide = True
-                    hidden.add(ob)
-            elif props.lamps == 'NONE' and ob.type == 'LAMP':
-                if not ob.hide:
-                    ob.hide = True
-                    hidden.add(ob)
-
-    packed = set()
-    for img in images:
-        if not img.packed_file:
-            try:
-                img.pack()
-                packed.add(img)
-            except:
-                operator.report({'WARNING'}, 'Error occured while packing an image')
-                return {'FINISHED'}
-
-    return (hidden, packed)
-
-
-# restore original situation
-def restore(hidden, packed):
-    for ob in hidden:
-        ob.hide = False
-    for img in packed:
-        img.unpack(method='USE_ORIGINAL')
-
-
-# save a copy of the current blendfile
-def save_blend_copy():
-    filepath = os.path.dirname(bpy.data.filepath)
-    filename = time.strftime("Sketchfab_%Y_%m_%d_%H_%M_%S.blend",
-        time.localtime(time.time()))
-    filepath = os.path.join(filepath, filename)
-
-    bpy.ops.wm.save_as_mainfile(filepath=filepath, compress=True,
-        copy=True)
-    size = os.path.getsize(filepath)
-
-    return (filepath, filename, size)
-
-
-# remove file copy
-def terminate(filepath):
-    os.remove(filepath)
 
 
 # save token to file
@@ -254,10 +197,35 @@ class ExportSketchfab(bpy.types.Operator):
             return {'CANCELLED'}
         props.uploading = True
 
-        hidden, packed = prepare_assets(self)
-        props.filepath, filename, size_blend = save_blend_copy()
-        props.size = format_size(size_blend)
-        restore(hidden, packed)
+        try:
+            # save settings to access them in the subprocess call
+            with open(SKETCHFAB_EXPORT_DATA_FILE, 'w') as s:
+                json.dump({'models': props.models,
+                           'lamps': props.lamps}, s)
+
+            binary_path = bpy.app.binary_path
+            script_path = os.path.dirname(os.path.realpath(__file__))
+            filepath = bpy.data.filepath
+
+            with open(SKETCHFAB_EXPORT_DATA_FILE, 'w') as s:
+                json.dump({'models': props.models, 'lamps': props.lamps}, s)
+
+            subprocess.check_call([binary_path, '--background',
+                                   '-b', filepath,
+                                   '--python', script_path + '/pack_for_export.py'])
+
+            # read subprocess call results
+            with open(SKETCHFAB_EXPORT_DATA_FILE, 'r') as s:
+                r = json.load(s)
+                size = r['size']
+                props.filepath = r['filepath']
+                filename = r['filename']
+
+        except Exception as e:
+            self.report({'WARNING'}, 'Error occured while preparing your file: %s' % str(e))
+            return {'FINISHED'}
+
+        props.size = format_size(size)
         self._thread = threading.Thread(
             target=upload,
             args=(props.filepath, filename)
@@ -417,6 +385,10 @@ class DialogOperator(bpy.types.Operator):
     def invoke(self, context, event):
         wm = context.window_manager
         return wm.invoke_props_dialog(self, width=550)
+
+# remove file copy
+def terminate(filepath):
+    os.remove(filepath)
 
 # registration
 classes = [ExportSketchfab,
