@@ -211,6 +211,10 @@ class ExportSketchfab(bpy.types.Operator):
             binary_path = bpy.app.binary_path
             script_path = os.path.dirname(os.path.realpath(__file__))
             (basename, ext) = os.path.splitext(bpy.data.filepath)
+            if not basename:
+                basename = os.path.join(basename, 'temp')
+            if not ext:
+                ext = '.blend'
             filepath = basename + "-export-sketchfab" + ext
 
             # save a copy of actual scene but don't interfere with the users models
