@@ -33,6 +33,17 @@ if "bpy" in locals():
     import imp
     imp.reload(requests)
 else:
+    # uuid module causes an error messagebox on windows https://developer.blender.org/T38364 and https://developer.blender.org/T27666
+    # using a dirty workaround to preload uuid without ctypes, until blender gets compiled with vs2012
+    import platform
+    if platform.system() == 'Windows':
+        import ctypes
+        CDLL = ctypes.CDLL
+        ctypes.CDLL = None
+        import uuid
+        ctypes.CDLL = CDLL
+        del ctypes, CDLL
+
     from .packages import requests
 
 import bpy
