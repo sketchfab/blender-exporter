@@ -19,9 +19,9 @@
 bl_info = {
     "name": "Sketchfab Exporter",
     "author": "Bart Crouch",
-    "version": (1, 2, 0),
+    "version": (1, 2, 1),
     "blender": (2, 6, 3),
-    "location": "View3D > Properties panel",
+    "location": "Tools > Upload tab",
     "description": "Upload your model to Sketchfab",
     "warning": "",
     "wiki_url": "",
@@ -157,20 +157,15 @@ def upload(filepath, filename):
     try:
         r = requests.post(SKETCHFAB_API_MODELS_URL, data=data, files=files, verify=False)
     except requests.exceptions.RequestException as e:
-        return show_upload_result('Upload failed. Error: %s' % str(e), 'ERROR')
+        return show_upload_result('Upload failed. Error: %s' % str(e), 'WARNING')
 
     result = r.json()
     if r.status_code != requests.codes.ok:
-        return show_upload_result('Upload failed. Error: %s' % result['error'], 'ERROR')
+        return show_upload_result('Upload failed. Error: %s' % result['error'], 'WARNING')
 
     model_url = SKETCHFAB_MODEL_URL + result['result']['id']
     return show_upload_result('Upload complete. %s' % model_url, 'INFO', model_url)
 
-
-
-def draw_success_popup(self, context):
-    result = context.window_manager.sketchfab.result
-    self.layout.operator("wm.url_open", text="View online").url = result
 
 
 # operator to export model to sketchfab
@@ -192,8 +187,6 @@ class ExportSketchfab(bpy.types.Operator):
                 if not props.message_type:
                     props.message_type = 'ERROR'
                 self.report({props.message_type}, props.message)
-                if props.message_type == 'INFO':
-                    context.window_manager.popup_menu(draw_success_popup, title="Upload successful")
                 context.window_manager.event_timer_remove(self._timer)
                 self._thread.join()
                 props.uploading = False
@@ -202,6 +195,7 @@ class ExportSketchfab(bpy.types.Operator):
         return {'PASS_THROUGH'}
 
     def execute(self, context):
+        context.window_manager.sketchfab.result = ''
         props = context.window_manager.sketchfab
         if not props.token:
             self.report({'ERROR'}, "Token is missing")
@@ -271,7 +265,8 @@ class ExportSketchfabBusy(bpy.types.Operator):
 # user interface
 class VIEW3D_PT_sketchfab(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
+    bl_region_type = 'TOOLS'
+    bl_category = 'Upload'
     bl_label = "Sketchfab"
 
     def draw(self, context):
@@ -307,6 +302,8 @@ class VIEW3D_PT_sketchfab(bpy.types.Panel):
                 text="Uploading " + props.size)
         else:
             layout.operator("export.sketchfab")
+        if context.window_manager.sketchfab.result:
+            layout.operator('wm.url_open', text='View online model', icon='URL').url = context.window_manager.sketchfab.result
 
 
 # property group containing all properties for the user interface
