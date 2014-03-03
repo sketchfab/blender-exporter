@@ -6,9 +6,8 @@
 
 import codecs
 import mimetypes
-import random
-import string
 
+from uuid import uuid4
 from io import BytesIO
 
 from .packages import six
@@ -17,14 +16,12 @@ from .fields import RequestField
 
 writer = codecs.lookup('utf-8')[3]
 
-_BOUNDARY_CHARS = string.digits + string.ascii_letters
 
 def choose_boundary():
     """
     Our embarassingly-simple replacement for mimetools.choose_boundary.
     """
-    boundary = ''.join(random.choice(_BOUNDARY_CHARS) for i in range(30))
-    return boundary
+    return uuid4().hex
 
 
 def iter_field_objects(fields):
