@@ -164,7 +164,7 @@ def upload(filepath, filename):
         return show_upload_result('Upload failed. Error: %s' % result['error'], 'WARNING')
 
     model_url = SKETCHFAB_MODEL_URL + result['result']['id']
-    return show_upload_result('Upload complete. %s' % model_url, 'INFO', model_url)
+    return show_upload_result('Upload complete. Available on your sketchfab.com dashboard.', 'INFO', model_url)
 
 
 
@@ -210,14 +210,19 @@ class ExportSketchfab(bpy.types.Operator):
 
             binary_path = bpy.app.binary_path
             script_path = os.path.dirname(os.path.realpath(__file__))
-            filepath = bpy.data.filepath
+            (basename, ext) = os.path.splitext(bpy.data.filepath)
+            filepath = basename + "-export-sketchfab" + ext
+
+            # save a copy of actual scene but don't interfere with the users models
+            bpy.ops.wm.save_as_mainfile(filepath=filepath,
+                                compress=True, copy=True)
 
             with open(SKETCHFAB_EXPORT_DATA_FILE, 'w') as s:
                 json.dump({'models': props.models, 'lamps': props.lamps}, s)
 
-            subprocess.check_call([binary_path, '--background',
-                                   '-b', filepath,
+            subprocess.check_call([binary_path, '-b', filepath,
                                    '--python', script_path + '/pack_for_export.py'])
+            os.remove(filepath)
 
             # read subprocess call results
             with open(SKETCHFAB_EXPORT_DATA_FILE, 'r') as s:
