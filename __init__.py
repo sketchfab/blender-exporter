@@ -19,8 +19,8 @@
 bl_info = {
     "name": "Sketchfab Exporter",
     "author": "Bart Crouch",
-    "version": (1, 2, 1),
-    "blender": (2, 6, 3),
+    "version": (1, 2, 2),
+    "blender": (2, 7, 0),
     "location": "Tools > Upload tab",
     "description": "Upload your model to Sketchfab",
     "warning": "",
@@ -30,13 +30,14 @@ bl_info = {
 }
 
 if "bpy" in locals():
-    import imp
-    imp.reload(requests)
+    pass
 else:
-    # uuid module causes an error messagebox on windows https://developer.blender.org/T38364 and https://developer.blender.org/T27666
+    # uuid module causes an error messagebox on windows
+    # - https://developer.blender.org/T38364
+    # - https://developer.blender.org/T27666
     # using a dirty workaround to preload uuid without ctypes, until blender gets compiled with vs2012
     import platform
-    if platform.system() == 'Windows':
+    if platform.system() == "Windows":
         import ctypes
         CDLL = ctypes.CDLL
         ctypes.CDLL = None
@@ -44,33 +45,57 @@ else:
         ctypes.CDLL = CDLL
         del ctypes, CDLL
 
-    from .packages import requests
-
 import bpy
 import os
 import threading
-import re
-import json
 import subprocess
 
 from bpy.app.handlers import persistent
-from bpy.props import StringProperty, EnumProperty, BoolProperty, PointerProperty
+from bpy.props import (StringProperty,
+                       EnumProperty,
+                       BoolProperty,
+                       PointerProperty,
+                       )
 
-SKETCHFAB_API_URL = 'https://api.sketchfab.com'
-SKETCHFAB_API_MODELS_URL = SKETCHFAB_API_URL + '/v1/models'
-SKETCHFAB_API_TOKEN_URL = SKETCHFAB_API_URL + '/v1/users/claim-token'
-SKETCHFAB_MODEL_URL = 'https://sketchfab.com/show/'
-SKETCHFAB_PRESET_FILE = 'sketchfab.txt'
-SKETCHFAB_EXPORT_DATA_FILENAME = 'sketchfab-export-data.json'
-SKETCHFAB_EXPORT_FILENAME = 'sketchfab-export.blend'
+SKETCHFAB_API_URL = "https://api.sketchfab.com"
+SKETCHFAB_API_MODELS_URL = SKETCHFAB_API_URL + "/v1/models"
+SKETCHFAB_API_TOKEN_URL = SKETCHFAB_API_URL + "/v1/users/claim-token"
+SKETCHFAB_MODEL_URL = "https://sketchfab.com/show/"
+SKETCHFAB_EXPORT_FILENAME = "sketchfab-export.blend"
 
-SKETCHFAB_EXPORT_DATA_FILE = os.path.join(
-    bpy.utils.user_resource('SCRIPTS'),
-    "presets",
-    SKETCHFAB_EXPORT_DATA_FILENAME
-)
+_presets = os.path.join(bpy.utils.user_resource('SCRIPTS'), "presets")
+SKETCHFAB_PRESET_FILENAME = os.path.join(_presets, "sketchfab.txt")
+SKETCHFAB_EXPORT_DATA_FILE = os.path.join(_presets, "sketchfab-export-data.json")
+del _presets
 
-DEBUG_MODE = False     # if True, no contact is made with the webserver
+
+# Singleton for storing global state
+class _SketchfabState:
+    __slots__ = (
+        "uploading",
+        "token_reload",
+        "size_label",
+        "model_url",
+
+        # store report args
+        "report_message",
+        "report_type",
+        )
+
+    def __init__(self):
+        self.uploading = False
+        self.token_reload = True
+        self.size_label = ""
+        self.model_url = ""
+
+        self.report_message = ""
+        self.report_type = ''
+
+sf_state = _SketchfabState()
+del _SketchfabState
+
+# if True, no contact is made with the webserver
+DEBUG_MODE = False
 
 
 # change a bytes int into a properly formatted string
@@ -81,9 +106,9 @@ def format_size(size):
         size /= 1024
         size_suffix = "mB"
     if size >= 100:
-        size = str(int(size))
+        size = "%d" % int(size)
     else:
-        size = "%.1f"%size
+        size = "%.1f" % size
     size += " " + size_suffix
 
     return size
@@ -92,13 +117,11 @@ def format_size(size):
 # attempt to load token from presets
 @persistent
 def load_token(dummy=False):
-    filepath = os.path.join(bpy.utils.user_resource('SCRIPTS'), "presets",
-        SKETCHFAB_PRESET_FILE)
-
+    filepath = SKETCHFAB_PRESET_FILENAME
     if not os.path.exists(filepath):
         return
 
-    token = ''
+    token = ""
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             token = f.readline()
@@ -106,32 +129,34 @@ def load_token(dummy=False):
         import traceback
         traceback.print_exc()
 
-    bpy.context.window_manager.sketchfab.token = token
-
+    wm = bpy.context.window_manager
+    wm.sketchfab.token = token
 
 
 # save token to file
 def update_token(self, context):
     token = context.window_manager.sketchfab.token
-    path = os.path.join(bpy.utils.user_resource('SCRIPTS'), "presets")
+    filepath = SKETCHFAB_PRESET_FILENAME
+
+    path = os.path.dirname(filepath)
     if not os.path.exists(path):
         os.makedirs(path)
-    filepath = os.path.join(path, SKETCHFAB_PRESET_FILE)
+
     with open(filepath, 'w', encoding='utf-8') as f:
         f.write(token)
 
 
-def show_upload_result(msg, msg_type, result=None):
-    props = bpy.context.window_manager.sketchfab
-    props.message = msg
-    props.message_type = msg_type
-    if result:
-        props.result = result
+def upload_report(report_message, report_type):
+    sf_state.report_message = report_message
+    sf_state.report_type = report_type
 
 
 # upload the blend-file to sketchfab
 def upload(filepath, filename):
-    props = bpy.context.window_manager.sketchfab
+    import requests
+
+    wm = bpy.context.window_manager
+    props = wm.sketchfab
 
     title = props.title
     if not title:
@@ -144,33 +169,32 @@ def upload(filepath, filename):
         "tags": props.tags,
         "private": props.private,
         "token": props.token,
-        "source": "blender-exporter"
-    }
+        "source": "blender-exporter",
+        }
 
     if props.private and props.password != "":
-        data['password'] = props.password
+        data["password"] = props.password
 
     files = {
-        'fileModel': open(filepath, 'rb')
-    }
+        "fileModel": open(filepath, 'rb'),
+        }
 
     try:
         r = requests.post(SKETCHFAB_API_MODELS_URL, data=data, files=files, verify=False)
     except requests.exceptions.RequestException as e:
-        return show_upload_result('Upload failed. Error: %s' % str(e), 'WARNING')
+        return upload_report("Upload failed. Error: %s" % str(e), 'WARNING')
 
     result = r.json()
     if r.status_code != requests.codes.ok:
-        return show_upload_result('Upload failed. Error: %s' % result['error'], 'WARNING')
+        return upload_report("Upload failed. Error: %s" % result["error"], 'WARNING')
 
-    model_url = SKETCHFAB_MODEL_URL + result['result']['id']
-    return show_upload_result('Upload complete. Available on your sketchfab.com dashboard.', 'INFO', model_url)
-
+    sf_state.model_url = SKETCHFAB_MODEL_URL + result["result"]["id"]
+    return upload_report("Upload complete. Available on your sketchfab.com dashboard.", 'INFO')
 
 
 # operator to export model to sketchfab
 class ExportSketchfab(bpy.types.Operator):
-    '''Upload your model to Sketchfab'''
+    """Upload your model to Sketchfab"""
     bl_idname = "export.sketchfab"
     bl_label = "Upload"
 
@@ -180,118 +204,121 @@ class ExportSketchfab(bpy.types.Operator):
     def modal(self, context, event):
         if event.type == 'TIMER':
             if not self._thread.is_alive():
-                props = context.window_manager.sketchfab
+                wm = context.window_manager
+                props = wm.sketchfab
                 terminate(props.filepath)
                 if context.area:
                     context.area.tag_redraw()
-                if not props.message_type:
-                    props.message_type = 'ERROR'
-                self.report({props.message_type}, props.message)
-                context.window_manager.event_timer_remove(self._timer)
+
+                # forward message from upload thread
+                if not sf_state.report_type:
+                    sf_state.report_type = 'ERROR'
+                self.report({sf_state.report_type}, sf_state.report_message)
+
+                wm.event_timer_remove(self._timer)
                 self._thread.join()
-                props.uploading = False
+                sf_state.uploading = False
                 return {'FINISHED'}
 
         return {'PASS_THROUGH'}
 
     def execute(self, context):
-        context.window_manager.sketchfab.result = ''
-        props = context.window_manager.sketchfab
+        import json
+
+        if sf_state.uploading:
+            self.report({'WARNING'}, "Please wait till current upload is finished")
+            return {'CANCELLED'}
+
+        wm = context.window_manager
+        sf_state.model_url = ""
+        props = wm.sketchfab
         if not props.token:
             self.report({'ERROR'}, "Token is missing")
             return {'CANCELLED'}
-        props.uploading = True
+
+        # Prepare to save the file
+        binary_path = bpy.app.binary_path
+        script_path = os.path.dirname(os.path.realpath(__file__))
+        basename, ext = os.path.splitext(bpy.data.filepath)
+        if not basename:
+            basename = os.path.join(basename, "temp")
+        if not ext:
+            ext = ".blend"
+        filepath = basename + "-export-sketchfab" + ext
 
         try:
-            # save settings to access them in the subprocess call
-            with open(SKETCHFAB_EXPORT_DATA_FILE, 'w') as s:
-                json.dump({'models': props.models,
-                           'lamps': props.lamps}, s)
-
-            binary_path = bpy.app.binary_path
-            script_path = os.path.dirname(os.path.realpath(__file__))
-            (basename, ext) = os.path.splitext(bpy.data.filepath)
-            if not basename:
-                basename = os.path.join(basename, 'temp')
-            if not ext:
-                ext = '.blend'
-            filepath = basename + "-export-sketchfab" + ext
-
             # save a copy of actual scene but don't interfere with the users models
-            bpy.ops.wm.save_as_mainfile(filepath=filepath,
-                                compress=True, copy=True)
+            bpy.ops.wm.save_as_mainfile(filepath=filepath, compress=True, copy=True)
 
             with open(SKETCHFAB_EXPORT_DATA_FILE, 'w') as s:
-                json.dump({'models': props.models, 'lamps': props.lamps}, s)
+                json.dump({
+                        "models": props.models,
+                        "lamps": props.lamps,
+                        }, s)
 
-            subprocess.check_call([binary_path, '-b', filepath,
-                                   '--python', script_path + '/pack_for_export.py'])
+            subprocess.check_call([
+                    binary_path,
+                    "--background",
+                    "-noaudio",
+                    filepath,
+                    "--python", os.path.join(script_path, "pack_for_export.py"),
+                    ])
+
             os.remove(filepath)
 
             # read subprocess call results
             with open(SKETCHFAB_EXPORT_DATA_FILE, 'r') as s:
                 r = json.load(s)
-                size = r['size']
-                props.filepath = r['filepath']
-                filename = r['filename']
+                size = r["size"]
+                props.filepath = r["filepath"]
+                filename = r["filename"]
 
         except Exception as e:
-            self.report({'WARNING'}, 'Error occured while preparing your file: %s' % str(e))
+            self.report({'WARNING'}, "Error occured while preparing your file: %s" % str(e))
             return {'FINISHED'}
 
-        props.size = format_size(size)
+        sf_state.uploading = True
+        sf_state.size_label = format_size(size)
         self._thread = threading.Thread(
-            target=upload,
-            args=(props.filepath, filename)
-        )
+                target=upload,
+                args=(props.filepath, filename),
+                )
         self._thread.start()
 
-        context.window_manager.modal_handler_add(self)
-        self._timer = context.window_manager.event_timer_add(1.0,
-            context.window)
+        wm.modal_handler_add(self)
+        self._timer = wm.event_timer_add(1.0, context.window)
 
         return {'RUNNING_MODAL'}
 
     def cancel(self, context):
-        context.window_manager.event_timer_remove(self._timer)
+        wm = context.window_manager
+        wm.event_timer_remove(self._timer)
         self._thread.join()
-
-        return {'CANCELLED'}
-
-
-# popup to say that something is already being uploaded
-class ExportSketchfabBusy(bpy.types.Operator):
-    '''Upload your model to Sketchfab'''
-    bl_idname = "export.sketchfab_busy"
-    bl_label = "Uploading"
-
-    def execute(self, context):
-        self.report({'WARNING'}, "Please wait till current upload is finished")
-
-        return {'FINISHED'}
 
 
 # user interface
 class VIEW3D_PT_sketchfab(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'TOOLS'
-    bl_category = 'Upload'
+    bl_category = "Upload"
+    bl_context = "objectmode"
     bl_label = "Sketchfab"
 
     def draw(self, context):
-        props = context.window_manager.sketchfab
-        if props.token_reload:
-            props.token_reload = False
+        wm = context.window_manager
+        props = wm.sketchfab
+        if sf_state.token_reload:
+            sf_state.token_reload = False
             if not props.token:
                 load_token()
         layout = self.layout
 
-        layout.label('Export:')
+        layout.label("Export:")
         col = layout.box().column(align=True)
         col.prop(props, "models")
         col.prop(props, "lamps")
 
-        layout.label('Model info:')
+        layout.label("Model info:")
         col = layout.box().column(align=True)
         col.prop(props, "title")
         col.prop(props, "description")
@@ -300,100 +327,100 @@ class VIEW3D_PT_sketchfab(bpy.types.Panel):
         if props.private:
             col.prop(props, "password")
 
-        layout.label('Sketchfab account:')
+        layout.label("Sketchfab account:")
         col = layout.box().column(align=True)
         col.prop(props, "token")
         row = col.row()
+        row.operator("wm.sketchfab_email_token", text="Claim Your Token")
         row.alignment = 'RIGHT'
-        row.operator('object.dialog_operator', text="Claim your token")
-        if props.uploading:
-            layout.operator("export.sketchfab_busy",
-                text="Uploading " + props.size)
+        if sf_state.uploading:
+            layout.operator("export.sketchfab", text="Uploading %s" % sf_state.size_label)
         else:
             layout.operator("export.sketchfab")
-        if context.window_manager.sketchfab.result:
-            layout.operator('wm.url_open', text='View online model', icon='URL').url = context.window_manager.sketchfab.result
+
+        model_url = sf_state.model_url
+        if model_url:
+            layout.operator("wm.url_open", text="View Online Model", icon='URL').url = model_url
 
 
 # property group containing all properties for the user interface
 class SketchfabProps(bpy.types.PropertyGroup):
-    description = StringProperty(name="Description",
-        description = "Description of the model (optional)",
-        default = "")
-    filepath = StringProperty(name="Filepath",
-        description = "internal use",
-        default = "")
-    lamps = EnumProperty(name="Lamps",
-        items = (('ALL', "All", "Export all lamps in the file"),
-                ('NONE', "None", "Don't export any lamps"),
-                ('SELECTION', "Selection", "Only export selected lamps")),
-        description = "Determines which lamps are exported",
-        default = 'ALL')
-    message = StringProperty(name="Message",
-        description = "internal use",
-        default = "")
-    message_type = StringProperty(name="Message type",
-        description = "internal use",
-        default = "")
-    models = EnumProperty(name="Models",
-        items = (('ALL', "All", "Export all meshes in the file"),
-                 ('SELECTION', "Selection", "Only export selected meshes")),
-        description = "Determines which meshes are exported",
-        default = 'SELECTION')
-    result = StringProperty(name="Result",
-        description = "internal use, stores the url of the uploaded model",
-        default = "")
-    size = StringProperty(name="Size",
-        description = "Current filesize being uploaded",
-        default = "")
-    private = BoolProperty(name="Private",
-        description = "Upload as private (requires a pro account)",
-        default = False)
-    password = StringProperty(name="Password",
-        description = "Password-protect your model (requires a pro account)",
-        default = "")
-    tags = StringProperty(name="Tags",
-        description = "List of tags, separated by spaces (optional)",
-        default = "")
-    title = StringProperty(name="Title",
-        description = "Title of the model (determined automatically if \
-left empty)",
-        default = "")
-    token = StringProperty(name="Api Key",
-        description = "You can find this on your dashboard at the Sketchfab \
-website",
-        default = "",
-        update = update_token)
-    token_reload = BoolProperty(name="Reload of token necessary?",
-        description = "internal use",
-        default = True)
-    token_reload = BoolProperty(name="Reload of token necessary?",
-        description = "internal use",
-        default = True)
-    uploading = BoolProperty(name="Busy uploading",
-        description = "internal use",
-        default = False)
+    description = StringProperty(
+            name="Description",
+            description="Description of the model (optional)",
+            default="")
+    filepath = StringProperty(
+            name="Filepath",
+            description="internal use",
+            default="",
+            )
+    lamps = EnumProperty(
+            name="Lamps",
+            items=(('ALL', "All", "Export all lamps in the file"),
+                   ('NONE', "None", "Don't export any lamps"),
+                   ('SELECTION', "Selection", "Only export selected lamps")),
+            description="Determines which lamps are exported",
+            default='ALL',
+            )
+    models = EnumProperty(
+            name="Models",
+            items=(('ALL', "All", "Export all meshes in the file"),
+                   ('SELECTION', "Selection", "Only export selected meshes")),
+            description="Determines which meshes are exported",
+            default='SELECTION',
+            )
+    private = BoolProperty(
+            name="Private",
+            description="Upload as private (requires a pro account)",
+            default=False,
+            )
+    password = StringProperty(
+            name="Password",
+            description="Password-protect your model (requires a pro account)",
+            default="",
+            )
+    tags = StringProperty(
+            name="Tags",
+            description="List of tags, separated by spaces (optional)",
+            default="",
+            )
+    title = StringProperty(
+            name="Title",
+            description="Title of the model (determined automatically if left empty)",
+            default="",
+            )
+    token = StringProperty(
+            name="Api Key",
+            description="You can find this on your dashboard at the Sketchfab website",
+            default="",
+            update=update_token,
+            )
 
 
-class DialogOperator(bpy.types.Operator):
-    bl_idname = "object.dialog_operator"
+class SketchfabEmailToken(bpy.types.Operator):
+    bl_idname = "wm.sketchfab_email_token"
     bl_label = "Enter your email to get a sketchfab token"
 
-    email = StringProperty(name="Email",
-                                     default="you@example.com")
+    email = StringProperty(
+            name="Email",
+            default="you@example.com",
+            )
 
     def execute(self, context):
+        import re
+        import requests
+
         EMAIL_RE = re.compile(r'[^@]+@[^@]+\.[^@]+')
         if not EMAIL_RE.match(self.email):
-            self.report({'ERROR'}, 'Wrong email format')
+            self.report({'ERROR'}, "Wrong email format")
         try:
-            r = requests.get(SKETCHFAB_API_TOKEN_URL + '?source=blender-exporter&email=' + self.email, verify=False)
+            r = requests.get(SKETCHFAB_API_TOKEN_URL + "?source=blender-exporter&email=" + self.email, verify=False)
         except requests.exceptions.RequestException as e:
             self.report({'ERROR'}, str(e))
             return {'FINISHED'}
 
         if r.status_code != requests.codes.ok:
-            self.report({'ERROR'}, 'An error occured. Check the format of your email')
+            self.report({'ERROR'}, "An error occured. Check the format of your email")
         else:
             self.report({'INFO'}, "Your email was sent at your email address")
 
@@ -403,34 +430,37 @@ class DialogOperator(bpy.types.Operator):
         wm = context.window_manager
         return wm.invoke_props_dialog(self, width=550)
 
+
 # remove file copy
 def terminate(filepath):
     os.remove(filepath)
 
 # registration
-classes = [ExportSketchfab,
-           ExportSketchfabBusy,
-           SketchfabProps,
-           DialogOperator,
-           VIEW3D_PT_sketchfab]
+classes = (
+    ExportSketchfab,
+    SketchfabProps,
+    SketchfabEmailToken,
+    VIEW3D_PT_sketchfab,
+    )
 
 
 def register():
-    for c in classes:
-        bpy.utils.register_class(c)
+    for cls in classes:
+        bpy.utils.register_class(cls)
+
     bpy.types.WindowManager.sketchfab = PointerProperty(
-        type = SketchfabProps)
+            type=SketchfabProps)
+
     load_token()
     bpy.app.handlers.load_post.append(load_token)
 
 
 def unregister():
-    for c in classes:
-        bpy.utils.unregister_class(c)
-    try:
-        del bpy.types.WindowManager.sketchfab
-    except:
-        pass
+    for cls in classes:
+        bpy.utils.unregister_class(cls)
+
+    del bpy.types.WindowManager.sketchfab
+
 
 if __name__ == "__main__":
     register()
